@@ -7,42 +7,38 @@ import (
 	"golang-mongo-api/env"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gorilla/mux"
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
-
-type Restaurant struct {
-	id            primitive.ObjectID
-	borough       string
-	cuisine       string
-	name          string
-	restaurant_id string
-}
 
 var client *mongo.Client
 
 func GetRestaurants(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-type", "application/json")
-	var places []Restaurant
-	collection := client.Database("sample_restaurants").Collection("restaurants")
+	var places []bson.M
+	coll := client.Database("sample_restaurants").Collection("restaurants")
 	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
-	cursor, err := collection.Find(ctx, bson.M{})
+	cursor, err := coll.Find(context.TODO(), bson.D{})
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(`{"message": "` + err.Error() + `"}`))
 		return
 	}
-
 	defer cursor.Close(ctx)
 	for cursor.Next(ctx) {
-		var rest Restaurant
-		cursor.Decode((&rest))
-		places = append(places, rest)
+		var result bson.M
+		err := cursor.Decode((&result))
+		if err != nil {
+			fmt.Println("cursor.Next() error: ", err)
+			os.Exit(1)
+		} else {
+			places = append(places, result)
+		}
 	}
 
 	if err := cursor.Err(); err != nil {
@@ -53,25 +49,39 @@ func GetRestaurants(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(places)
 }
+func GetRestaurantByName(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("content-type", "application/json")
+	params := mux.Vars(r)
+	name := params["name"]
+	fmt.Println(name)
+
+	coll := client.Database("sample_restaurants").Collection("restaurants")
+
+	var result bson.M
+	s := coll.FindOne(context.TODO(), bson.D{{"name", name}}).Decode(&result)
+	if s != nil {
+		if s == mongo.ErrNoDocuments {
+			return
+		}
+		panic(s)
+	}
+	json.NewEncoder(w).Encode(result)
+}
 
 func main() {
 	fmt.Println("Starting...")
-	client, err := mongo.NewClient(options.Client().ApplyURI(env.Connect))
-	if err != nil {
-		log.Fatal(err)
-	}
+	router := mux.NewRouter()
+	clientOptions := options.Client().ApplyURI(env.Connect)
 	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
-	err = client.Connect(ctx)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer client.Disconnect(ctx)
+	client, _ = mongo.Connect(context.TODO(), clientOptions)
+
 	databases, err := client.ListDatabaseNames(ctx, bson.M{})
 	if err != nil {
 		log.Fatal(err)
 	}
+	fmt.Println("HERE")
 	fmt.Println(databases)
-	router := mux.NewRouter()
 	router.HandleFunc("/restaurants", GetRestaurants).Methods("GET")
-	http.ListenAndServe(":8033", router)
+	router.HandleFunc("/restaurant/{name}", GetRestaurantByName).Methods("GET")
+	log.Fatal(http.ListenAndServe(":8033", router))
 }
